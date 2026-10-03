@@ -11,7 +11,7 @@ npm install
 npm run desktop
 ```
 
-Use **Open repository** to choose an existing project. The `+` beside Workspace also offers **Clone repository** and **Initialize repository**. Grove uses your existing Git identity, SSH configuration, and credential helpers.
+Use the repository name in the masthead to open the searchable repository switcher. Choose **Open repository** for an existing project, **Clone** for a remote repository, or **New** to initialize a repository. Grove uses your existing Git identity, SSH configuration, and credential helpers.
 
 To run the production build:
 
@@ -32,7 +32,7 @@ Find it under `release/mac-arm64/Grove.app` on Apple Silicon, or `release/mac/Gr
 
 - Open, bookmark, clone, and initialize repositories; switch among projects.
 - Review staged, unstaged, renamed, deleted, untracked, and conflicted files.
-- Browse unified or split diffs, stage or unstage individual files or all changes, discard selected unstaged changes, commit, and amend.
+- Browse unified or split diffs with optional line wrapping. Check files to stage them, uncheck staged files to unstage them, or use the group action to stage or unstage all visible matches. Discard selected unstaged changes, commit, and amend.
 - Browse an all-branch commit graph; search messages, authors, email addresses, and hashes; inspect commit details and changed files.
 - Create, switch, rename, and delete branches. Remote branches create or reuse appropriate local tracking branches.
 - Fetch, fast-forward pull, push, and configure upstreams and remotes.
@@ -41,20 +41,25 @@ Find it under `release/mac-arm64/Grove.app` on Apple Silicon, or `release/mac/Gr
 - Edit text conflicts, stage resolutions, and continue or abort the current operation.
 - Run additional Git commands in the command panel and inspect their actual output in Activity log.
 
-Changes and History are the main views. Expand **Git tools** for branches, stashes, tags, remotes, and the activity log. Pull and Push stay in the toolbar; Fetch and additional operations are in the repository actions menu. Expand **Commit options** for a description, amend, or stash. Cmd/Ctrl + Enter also commits from the summary field.
+The workspace has one navigation row for **Changes**, **History**, **Branches**, and **Stashes**. **More** contains tags, remotes, the activity log, and the Git command panel. Repository and branch switchers sit in the masthead beside Fetch, Pull, and Push. A branch without an upstream offers **Publish** when a remote is configured. Search local and remote branches in the branch switcher, or create a branch directly from it.
 
-Drag pane dividers to resize the workspace. Preferences offer compact file rows and adjustable code text. Commit drafts are kept per repository when changing views or restarting.
+Changes uses the workspace height for the file list and diff. A compact commit bar below both panes groups the summary, staged count, target branch, and commit action. Its width is limited on large screens, and saved descriptions and amend mode have explicit indicators. Open **Details** for an optional description or to amend the previous commit. Commit guidance explains whether staging, a summary, or conflict resolution is needed. Filtering the file list also limits **Stage filtered** and **Unstage filtered** to matching files.
+
+Drag the divider to resize the file list, or focus it and use the arrow keys. Preferences offer compact file rows and adjustable code text; the diff toolbar remembers unified/split mode and line wrapping. File names include their directory paths to distinguish duplicates. Use Up/Down and Home/End on file rows to move through diffs. Searchable switchers support Up/Down, and action menus also support Home/End. Dialogs keep keyboard focus inside and return it to the opening control; Escape closes them. The first keyboard link skips directly to the workspace. The layout adapts to narrow windows without a navigation sidebar.
+
+Commit drafts are kept per repository when changing views or restarting.
 
 ## Keyboard shortcuts
 
-| Shortcut         | Action                            |
-| ---------------- | --------------------------------- |
-| Cmd/Ctrl + O     | Open repository                   |
-| Cmd/Ctrl + R     | Refresh repository                |
-| Cmd/Ctrl + F     | Filter changed files              |
-| Cmd/Ctrl + K     | Open Git command panel            |
-| Cmd/Ctrl + Enter | Commit from the description field |
-| Escape           | Close a dialog                    |
+| Shortcut             | Action                             |
+| -------------------- | ---------------------------------- |
+| Cmd/Ctrl + O         | Open repository                    |
+| Cmd/Ctrl + R         | Refresh repository                 |
+| Cmd/Ctrl + F         | Filter changed files               |
+| Cmd/Ctrl + K         | Open Git command panel             |
+| Cmd/Ctrl + 1 / 2 / 3 | Changes / History / Branches       |
+| Cmd/Ctrl + Enter     | Commit from summary or description |
+| Escape               | Close a dialog                     |
 
 ## Browser preview
 
