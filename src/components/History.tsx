@@ -5,6 +5,7 @@ import {
   GitCommitHorizontal,
   Copy,
   ChevronRight,
+  ChevronDown,
   Undo2,
   GitPullRequestArrow,
   RotateCcw,
@@ -155,8 +156,9 @@ export default function History({
             onChange={(e) => setSearch(e.target.value)}
           />
           <span>
-            {commits.length}
-            {hasMore ? "+" : ""} commits
+            {busy
+              ? "Loading…"
+              : `${commits.length}${hasMore ? "+" : ""} commits`}
           </span>
         </div>
         <div className="history-columns">
@@ -186,6 +188,7 @@ export default function History({
             commits.map((commit, i) => (
               <button
                 className={`commit-row ${selected === commit.hash ? "selected" : ""}`}
+                aria-current={selected === commit.hash ? "true" : undefined}
                 key={commit.hash}
                 onClick={() => setSelected(commit.hash)}
               >
@@ -377,50 +380,55 @@ export default function History({
                 ))}
               </div>
             </div>
-            <div className="commit-operations">
-              <button
-                className="button"
-                onClick={() =>
-                  onOperation("cherry-pick", { ref: details.commit.hash })
-                }
-              >
-                <GitPullRequestArrow size={14} />
-                Cherry-pick
-              </button>
-              <button
-                className="button"
-                onClick={() =>
-                  onOperation("revert", { ref: details.commit.hash })
-                }
-              >
-                <Undo2 size={14} />
-                Revert
-              </button>
-              <button
-                className="button"
-                onClick={() =>
-                  onOperation("reset", { ref: details.commit.hash })
-                }
-              >
-                <RotateCcw size={14} />
-                Reset to…
-              </button>
-              <button
-                className="button"
-                onClick={() =>
-                  onOperation("tag-create", { ref: details.commit.hash })
-                }
-              >
-                <Tag size={14} />
-                Tag
-              </button>
-            </div>
+            <details className="commit-action-options">
+              <summary>
+                Commit actions <ChevronDown size={14} aria-hidden="true" />
+              </summary>
+              <div className="commit-operations">
+                <button
+                  className="button"
+                  onClick={() =>
+                    onOperation("cherry-pick", { ref: details.commit.hash })
+                  }
+                >
+                  <GitPullRequestArrow size={14} />
+                  Cherry-pick
+                </button>
+                <button
+                  className="button"
+                  onClick={() =>
+                    onOperation("revert", { ref: details.commit.hash })
+                  }
+                >
+                  <Undo2 size={14} />
+                  Revert
+                </button>
+                <button
+                  className="button"
+                  onClick={() =>
+                    onOperation("reset", { ref: details.commit.hash })
+                  }
+                >
+                  <RotateCcw size={14} />
+                  Reset to…
+                </button>
+                <button
+                  className="button"
+                  onClick={() =>
+                    onOperation("tag-create", { ref: details.commit.hash })
+                  }
+                >
+                  <Tag size={14} />
+                  Tag
+                </button>
+              </div>
+            </details>
           </>
         ) : selected ? (
           <Loading label="Reading commit" />
         ) : (
           <EmptyState
-            title="Your history, in focus"
+            title="No commit selected"
             description="Select a commit to see what changed."
           />
         )}

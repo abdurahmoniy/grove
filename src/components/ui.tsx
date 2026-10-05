@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useId, useRef } from "react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
 import {
   X,
   GitBranch,
@@ -32,23 +32,21 @@ export function Logo({ size = 28 }: { size?: number }) {
 export function IconButton({
   label,
   children,
-  onClick,
-  disabled,
   className = "",
+  type = "button",
+  title = label,
+  ...props
 }: {
   label: string;
   children: ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-  className?: string;
-}) {
+} & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children" | "aria-label">) {
   return (
     <button
+      {...props}
+      type={type}
       className={`icon-button ${className}`}
-      title={label}
+      title={title}
       aria-label={label}
-      onClick={onClick}
-      disabled={disabled}
     >
       {children}
     </button>
@@ -75,7 +73,7 @@ export function EmptyState({
   return (
     <div className="empty-state">
       <div className="empty-icon">
-        <GitBranch size={30} strokeWidth={1.4} />
+        <GitBranch size={30} strokeWidth={1.4} aria-hidden="true" />
       </div>
       <h2>{title}</h2>
       <p>{description}</p>
@@ -89,8 +87,8 @@ export function Loading({
   label?: string;
 }) {
   return (
-    <div className="loading">
-      <LoaderCircle className="spin" size={20} />
+    <div className="loading" role="status" aria-live="polite">
+      <LoaderCircle className="spin" size={20} aria-hidden="true" />
       <span>{label}</span>
     </div>
   );
@@ -98,33 +96,44 @@ export function Loading({
 export function FileIcon({ path }: { path: string }) {
   const extension = path.split(".").pop();
   return extension === "tsx" || extension === "ts" ? (
-    <span className="file-type ts">TS</span>
+    <span className="file-type ts" aria-hidden="true">
+      TS
+    </span>
   ) : extension === "css" ? (
-    <span className="file-type css">#</span>
+    <span className="file-type css" aria-hidden="true">
+      #
+    </span>
   ) : extension === "json" ? (
-    <Braces size={15} className="muted" />
+    <Braces size={15} className="muted" aria-hidden="true" />
   ) : extension === "md" ? (
-    <FileText size={15} className="muted" />
+    <FileText size={15} className="muted" aria-hidden="true" />
   ) : (
-    <FileCode2 size={15} className="muted" />
+    <FileCode2 size={15} className="muted" aria-hidden="true" />
   );
 }
 export function StatusMark({ status }: { status: string }) {
-  const s = status === "?" ? "U" : status;
+  const label =
+    {
+      M: "Modified",
+      A: "Added",
+      D: "Deleted",
+      R: "Renamed",
+      C: "Copied",
+      T: "File type changed",
+      U: "Conflict",
+      "?": "Untracked",
+      "!": "Ignored",
+    }[status] || status;
+  const tone =
+    status === "U" ? "conflict" : status === "?" ? "untracked" : status;
   return (
     <span
-      className={`status-mark status-${s}`}
-      title={
-        s === "M"
-          ? "Modified"
-          : s === "A" || s === "U"
-            ? "Added / untracked"
-            : s === "D"
-              ? "Deleted"
-              : s
-      }
+      className={`status-mark status-${tone}`}
+      title={label}
+      role="img"
+      aria-label={label}
     >
-      {s}
+      {status === "U" ? "!" : status}
     </span>
   );
 }
@@ -179,9 +188,14 @@ export function Toast({
   return (
     <div
       role={error ? "alert" : "status"}
+      aria-atomic="true"
       className={`toast ${error ? "error" : ""}`}
     >
-      {error ? <AlertCircle size={18} /> : <Check size={18} />}
+      {error ? (
+        <AlertCircle size={18} aria-hidden="true" />
+      ) : (
+        <Check size={18} aria-hidden="true" />
+      )}
       <span>{message}</span>
       <IconButton label="Dismiss notification" onClick={onClose}>
         <X size={15} />
@@ -203,40 +217,93 @@ export function Modal({
   wide?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const subtitleId = useId();
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    closeRef.current = onClose;
+  }, [onClose]);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
+    const dialog = ref.current;
+    if (!dialog) return;
     const focusables = () =>
       Array.from(
-        ref.current?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), input, textarea, select, [tabindex="0"]',
-        ) || [],
+        dialog.querySelectorAll<HTMLElement>(
+          'a[href], button, input, textarea, select, summary, [contenteditable="true"], [tabindex]',
+        ),
+      ).filter(
+        (element) =>
+          element.tabIndex >= 0 &&
+          !element.matches(":disabled") &&
+          !element.closest('[hidden], [inert], [aria-hidden="true"]') &&
+          element.getClientRects().length > 0 &&
+          getComputedStyle(element).visibility !== "hidden",
       );
-    (
-      ref.current?.querySelector<HTMLElement>(
-        "[autofocus], input, textarea, select",
-      ) || focusables()[0]
-    )?.focus();
+    const isTopDialog = () => {
+      const dialogs = document.querySelectorAll(
+        '[role="dialog"][aria-modal="true"]',
+      );
+      return dialogs[dialogs.length - 1] === dialog;
+    };
+    const items = focusables();
+    const initial =
+      items.find((element) => element.matches("[autofocus]")) ||
+      items.find((element) => element.matches("input, textarea, select")) ||
+      items[0] ||
+      dialog;
+    if (!dialog.contains(document.activeElement)) initial.focus();
+    const supportsOpenSelect = CSS.supports("selector(select:open)");
     const listener = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (!isTopDialog() || e.defaultPrevented || e.isComposing) return;
+      // Let an open native picker handle Escape, Tab, and option navigation
+      // before applying the containing dialog's keyboard behavior.
+      if (supportsOpenSelect && dialog.querySelector("select:open")) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closeRef.current();
+      }
       if (e.key === "Tab") {
         const items = focusables();
         const first = items[0];
         const last = items[items.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
+        const current = document.activeElement;
+        if (!first) {
           e.preventDefault();
-          last?.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
+          dialog.focus();
+        } else if (
+          e.shiftKey &&
+          (current === first || !items.includes(current as HTMLElement))
+        ) {
           e.preventDefault();
-          first?.focus();
+          last.focus();
+        } else if (
+          !e.shiftKey &&
+          (current === last || !items.includes(current as HTMLElement))
+        ) {
+          e.preventDefault();
+          first.focus();
         }
       }
     };
+    const containFocus = (e: FocusEvent) => {
+      if (
+        isTopDialog() &&
+        e.target instanceof Node &&
+        !dialog.contains(e.target)
+      ) {
+        (focusables()[0] || dialog).focus();
+      }
+    };
     document.addEventListener("keydown", listener);
+    document.addEventListener("focusin", containFocus);
     return () => {
       document.removeEventListener("keydown", listener);
-      previous?.focus();
+      document.removeEventListener("focusin", containFocus);
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
     };
-  }, [onClose]);
+  }, []);
   return (
     <div
       className="modal-scrim"
@@ -248,13 +315,15 @@ export function Modal({
         ref={ref}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="modal-title"
+        aria-labelledby={titleId}
+        aria-describedby={subtitle ? subtitleId : undefined}
+        tabIndex={-1}
         className={`modal ${wide ? "wide" : ""}`}
       >
         <div className="modal-heading">
           <div>
-            <h2 id="modal-title">{title}</h2>
-            {subtitle && <p>{subtitle}</p>}
+            <h2 id={titleId}>{title}</h2>
+            {subtitle && <p id={subtitleId}>{subtitle}</p>}
           </div>
           <IconButton label="Close dialog" onClick={onClose}>
             <X size={19} />

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useId, useState } from "react";
 import { AlertTriangle, Terminal, LoaderCircle } from "lucide-react";
 import type { ActionArgs, Snapshot } from "../types";
 import { errorMessage } from "../api";
@@ -20,13 +20,14 @@ type Definition = {
 const definitions: Record<string, Definition> = {
   "branch-create": {
     title: "Create a branch",
-    description: "Give your next idea a little room to grow.",
+    description:
+      "Create a local branch from the current commit and switch to it.",
     button: "Create & switch",
     fields: [
       {
         key: "name",
         label: "Branch name",
-        placeholder: "feature/your-next-idea",
+        placeholder: "feature/new-navigation",
       },
     ],
   },
@@ -106,13 +107,13 @@ const definitions: Record<string, Definition> = {
   },
   "stash-save": {
     title: "Save a stash",
-    description: "Set your changes aside and return to a clean working tree.",
+    description: "Save your changes in a stash to restore later.",
     button: "Stash changes",
     fields: [
       {
         key: "message",
         label: "Stash message",
-        placeholder: "What are you working on?",
+        placeholder: "Describe the changes you are saving",
         optional: true,
       },
     ],
@@ -138,11 +139,17 @@ const definitions: Record<string, Definition> = {
   },
   "tag-create": {
     title: "Create a tag",
-    description: "Mark a meaningful point in your project’s history.",
+    description:
+      "Create a local tag. By default, it points to the current commit.",
     button: "Create tag",
     fields: [
       { key: "name", label: "Tag name", placeholder: "v1.3.0" },
-      { key: "ref", label: "Reference", placeholder: "HEAD", optional: true },
+      {
+        key: "ref",
+        label: "Commit or branch",
+        placeholder: "HEAD",
+        optional: true,
+      },
     ],
   },
   "tag-delete": {
@@ -157,7 +164,7 @@ const definitions: Record<string, Definition> = {
     description: "Connect this repository to a remote Git server.",
     button: "Add remote",
     fields: [
-      { key: "name", label: "Name", placeholder: "origin" },
+      { key: "name", label: "Remote name", placeholder: "origin" },
       {
         key: "url",
         label: "Repository URL",
@@ -173,15 +180,10 @@ const definitions: Record<string, Definition> = {
     fields: [{ key: "name", label: "Remote name" }],
     destructive: true,
   },
-  push: {
-    title: "Push changes",
-    description: "Send your committed work to a remote repository.",
-    button: "Push changes",
-    fields: [{ key: "remote", label: "Remote", placeholder: "origin" }],
-  },
   clone: {
     title: "Clone a repository",
-    description: "Get a local copy. You’ll choose a destination folder next.",
+    description:
+      "Copy a remote repository to your computer. Choose its destination folder next.",
     button: "Choose destination & clone",
     fields: [
       {
@@ -260,6 +262,7 @@ export default function ActionDialog({
   onClose: () => void;
   onSubmit: (action: string, args: ActionArgs) => Promise<void>;
 }) {
+  const formId = useId();
   const definition = definitions[action] || {
     title: action,
     description: "Run this operation in the current repository.",
@@ -268,13 +271,6 @@ export default function ActionDialog({
   const [args, setArgs] = useState<ActionArgs>({
     mode: "mixed",
     includeUntracked: true,
-    remote:
-      snapshot?.remotes
-        .filter((remote) => snapshot.upstream.startsWith(remote.name + "/"))
-        .sort((a, b) => b.name.length - a.name.length)[0]?.name ||
-      snapshot?.remotes[0]?.name ||
-      "origin",
-    setUpstream: !snapshot?.upstream,
     ...initial,
   });
   const [command, setCommand] = useState("git status --short");
@@ -290,8 +286,11 @@ export default function ActionDialog({
       onClose={close}
     >
       <form
+        aria-busy={busy}
+        aria-describedby={error ? `${formId}-error` : undefined}
         onSubmit={async (e) => {
           e.preventDefault();
+          if (busy) return;
           setError("");
           setBusy(true);
           try {
@@ -313,23 +312,31 @@ export default function ActionDialog({
             <span>{path || "New local repository"}</span>
           </div>
           {definition.fields?.map((field) => (
-            <label className="field-label" key={field.key}>
+            <label
+              className="field-label"
+              key={field.key}
+              htmlFor={`${formId}-${field.key}`}
+            >
               {field.label}
               {field.optional && <span className="optional">optional</span>}
               {field.multiline ? (
                 <textarea
+                  id={`${formId}-${field.key}`}
                   value={String(args[field.key] || "")}
                   required={!field.optional}
+                  disabled={busy}
                   onChange={(e) =>
                     setArgs({ ...args, [field.key]: e.target.value })
                   }
                 />
               ) : (
                 <input
+                  id={`${formId}-${field.key}`}
                   value={String(args[field.key] || "")}
                   required={!field.optional}
+                  disabled={busy}
                   placeholder={field.placeholder}
-                  list={field.key === "ref" ? "git-refs" : undefined}
+                  list={field.key === "ref" ? `${formId}-git-refs` : undefined}
                   onChange={(e) =>
                     setArgs({ ...args, [field.key]: e.target.value })
                   }
@@ -337,16 +344,22 @@ export default function ActionDialog({
               )}
             </label>
           ))}
-          <datalist id="git-refs">
+          <datalist id={`${formId}-git-refs`}>
             {snapshot?.branches.map((b) => (
               <option key={b.name} value={b.name} />
             ))}
           </datalist>
           {action === "reset" && (
-            <label className="field-label">
-              Reset mode
+            <label className="field-label" htmlFor={`${formId}-mode`}>
+              <span id={`${formId}-mode-label`}>Reset mode</span>
               <select
+                id={`${formId}-mode`}
+                aria-labelledby={`${formId}-mode-label`}
+                aria-describedby={
+                  args.mode === "hard" ? `${formId}-reset-warning` : undefined
+                }
                 value={args.mode}
+                disabled={busy}
                 onChange={(e) => setArgs({ ...args, mode: e.target.value })}
               >
                 <option value="soft">Soft — keep changes staged</option>
@@ -354,7 +367,7 @@ export default function ActionDialog({
                 <option value="hard">Hard — discard all tracked changes</option>
               </select>
               {args.mode === "hard" && (
-                <span className="danger-copy">
+                <span className="danger-copy" id={`${formId}-reset-warning`}>
                   All tracked changes will be permanently lost.
                 </span>
               )}
@@ -365,6 +378,7 @@ export default function ActionDialog({
               <input
                 type="checkbox"
                 checked={args.includeUntracked}
+                disabled={busy}
                 onChange={(e) =>
                   setArgs({ ...args, includeUntracked: e.target.checked })
                 }
@@ -372,35 +386,35 @@ export default function ActionDialog({
               Include untracked files
             </label>
           )}
-          {action === "push" && (
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={args.setUpstream}
-                onChange={(e) =>
-                  setArgs({ ...args, setUpstream: e.target.checked })
-                }
-              />
-              Set as upstream for this branch
-            </label>
-          )}
           {action === "command" && (
-            <label className="field-label">
-              Command
+            <label className="field-label" htmlFor={`${formId}-command`}>
+              <span id={`${formId}-command-label`}>Command</span>
               <textarea
+                id={`${formId}-command`}
+                aria-labelledby={`${formId}-command-label`}
+                aria-describedby={`${formId}-command-help`}
                 className="command-input"
                 value={command}
+                disabled={busy}
+                required
                 onChange={(e) => setCommand(e.target.value)}
                 spellCheck={false}
               />
-              <span className="field-help">
+              <span className="field-help" id={`${formId}-command-help`}>
                 Git arguments only. Shell operators and pipelines are not
                 interpreted.
               </span>
             </label>
           )}
           {args.files && (
-            <div className="affected-files">
+            <div
+              className="affected-files"
+              role="group"
+              aria-labelledby={`${formId}-files-label`}
+            >
+              <strong id={`${formId}-files-label`}>
+                Selected files ({args.files.length})
+              </strong>
               {args.files.map((file) => (
                 <code key={file}>{file}</code>
               ))}
@@ -408,14 +422,14 @@ export default function ActionDialog({
           )}
           {definition.destructive && (
             <div className="destructive-note">
-              <AlertTriangle size={16} />
+              <AlertTriangle size={16} aria-hidden="true" />
               <span>
                 Review the repository and selection before continuing.
               </span>
             </div>
           )}
           {error && (
-            <div className="inline-error" role="alert">
+            <div className="inline-error" role="alert" id={`${formId}-error`}>
               {error}
             </div>
           )}
@@ -434,7 +448,9 @@ export default function ActionDialog({
             className={`button ${definition.destructive ? "danger" : "primary"}`}
             disabled={busy}
           >
-            {busy && <LoaderCircle size={14} className="spin" />}
+            {busy && (
+              <LoaderCircle size={14} className="spin" aria-hidden="true" />
+            )}
             {busy ? "Working…" : definition.button}
           </button>
         </div>
@@ -443,5 +459,5 @@ export default function ActionDialog({
   );
 }
 function GitRepoIcon() {
-  return <Terminal size={14} />;
+  return <Terminal size={14} aria-hidden="true" />;
 }

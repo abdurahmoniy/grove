@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Columns2,
+  WrapText,
   AlignLeft,
   FileCode2,
   Copy,
@@ -61,7 +62,34 @@ export default function DiffViewer({
   onResolve?: () => void;
   compact?: boolean;
 }) {
-  const [split, setSplit] = useState(false);
+  const [split, setSplit] = useState(() => {
+    try {
+      return localStorage.getItem("grove:diffLayout") === "split";
+    } catch {
+      return false;
+    }
+  });
+  const [wrap, setWrap] = useState(() => {
+    try {
+      return localStorage.getItem("grove:diffWrap") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    try {
+      localStorage.setItem("grove:diffLayout", split ? "split" : "unified");
+      localStorage.setItem("grove:diffWrap", String(wrap));
+    } catch {}
+  }, [split, wrap]);
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = 0;
+      scrollRef.current.scrollLeft = 0;
+    }
+    setCopied(false);
+  }, [file, staged]);
   const [copied, setCopied] = useState(false);
   const lines = useMemo(() => parseDiff(diff?.text || ""), [diff]);
   const additions = lines.filter((l) => l.type === "add").length;
@@ -96,19 +124,26 @@ export default function DiffViewer({
         <div className="diff-empty-symbol">
           <FileCode2 size={30} strokeWidth={1.3} />
         </div>
-        <h3>A closer look at your code</h3>
-        <p>Select a file to explore its changes.</p>
+        <h3>Select a file to review</h3>
+        <p>Review its diff, then check the files you want to commit.</p>
       </div>
     );
   return (
     <section
-      className={`diff-panel ${compact ? "compact" : ""}`}
+      className={`diff-panel ${compact ? "compact" : ""} ${wrap ? "wrap-lines" : ""}`}
       aria-label="File diff"
     >
       <div className="diff-heading">
         <div className="diff-filename">
           <FileIcon path={file} />
-          <strong>{file.split("/").pop()}</strong>
+          <div className="diff-file-label">
+            <strong>{file.split("/").pop()}</strong>
+            <span title={file}>
+              {file.includes("/")
+                ? file.slice(0, file.lastIndexOf("/"))
+                : "Repository root"}
+            </span>
+          </div>
           <span className="diff-stats">
             <span>+{additions}</span>
             <span>−{deletions}</span>
@@ -128,7 +163,7 @@ export default function DiffViewer({
             </button>
           )}
           <IconButton
-            label="Copy file path"
+            label={copied ? "File path copied" : "Copy file path"}
             onClick={() => {
               navigator.clipboard
                 .writeText(file)
@@ -144,29 +179,50 @@ export default function DiffViewer({
         </div>
       </div>
       <div className="diff-subheading">
-        <span>{file}</span>
-        <div className="segmented" aria-label="Diff display">
-          <button
-            aria-label="Unified diff"
-            aria-pressed={!split}
-            className={!split ? "active" : ""}
-            onClick={() => setSplit(false)}
+        <span className="diff-scope">
+          {staged === undefined
+            ? "Committed changes"
+            : staged
+              ? "Staged changes"
+              : "Working changes"}
+        </span>
+        <div className="diff-view-controls">
+          <IconButton
+            label="Wrap long lines"
+            aria-pressed={wrap}
+            className={wrap ? "active" : ""}
+            onClick={() => setWrap(!wrap)}
           >
-            <AlignLeft size={14} />
-            <span>Unified</span>
-          </button>
-          <button
-            aria-label="Split diff"
-            aria-pressed={split}
-            className={split ? "active" : ""}
-            onClick={() => setSplit(true)}
-          >
-            <Columns2 size={14} />
-            <span>Split</span>
-          </button>
+            <WrapText size={16} />
+          </IconButton>
+          <div className="segmented" aria-label="Diff display">
+            <button
+              aria-label="Unified diff"
+              aria-pressed={!split}
+              className={!split ? "active" : ""}
+              onClick={() => setSplit(false)}
+            >
+              <AlignLeft size={14} />
+              <span>Unified</span>
+            </button>
+            <button
+              aria-label="Split diff"
+              aria-pressed={split}
+              className={split ? "active" : ""}
+              onClick={() => setSplit(true)}
+            >
+              <Columns2 size={14} />
+              <span>Split</span>
+            </button>
+          </div>
         </div>
       </div>
-      <div className="diff-scroll">
+      <div
+        className="diff-scroll"
+        ref={scrollRef}
+        tabIndex={0}
+        aria-label="Diff content"
+      >
         {loading ? (
           <Loading label="Reading changes" />
         ) : error ? (
@@ -206,6 +262,13 @@ export default function DiffViewer({
                       >
                         <span className="line-number">
                           {side === "left" ? line?.old : line?.next}
+                        </span>
+                        <span className="line-sign">
+                          {line?.type === "add"
+                            ? "+"
+                            : line?.type === "delete"
+                              ? "−"
+                              : " "}
                         </span>
                         <code>{line && <Code text={line.text} />}</code>
                       </div>

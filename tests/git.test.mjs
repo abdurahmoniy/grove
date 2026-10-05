@@ -244,7 +244,7 @@ test("pushes, clones, fetches and pulls through a local bare remote", async (t) 
   await git(base, "init", "--bare", remote);
   await action("remote-add", { name: "origin", url: remote });
   assert.deepEqual((await snapshot()).remotes, [
-    { name: "origin", url: remote },
+    { name: "origin", url: remote, pushUrls: [remote] },
   ]);
   await action("push", { remote: "origin", setUpstream: true });
   const branch = (await snapshot()).branch;
@@ -745,6 +745,467 @@ test("canonical repository roots retain significant trailing whitespace", async 
     assert.equal(
       (await service.request("snapshot", { path })).root,
       await realpath(path),
+    );
+  }
+});
+
+async function syncFixture(t) {
+  const data = await fixture(t);
+  const branch = (await data.snapshot()).branch;
+  const remote = join(data.base, "sync remote.git");
+  await git(data.base, "init", "--bare", remote);
+  await data.action("remote-add", { name: "origin", url: remote });
+  await data.action("push", { remote: "origin", setUpstream: true });
+  return { ...data, branch, remote };
+}
+
+test("snapshot reports every push destination separately from a remote fetch URL", async (t) => {
+  const { base, path, remote, snapshot } = await syncFixture(t);
+  const pushUrls = [
+    join(base, "first push.git"),
+    join(base, "second push.git"),
+  ];
+  for (const destination of pushUrls) {
+    await git(base, "init", "--bare", destination);
+    await git(
+      path,
+      "remote",
+      "set-url",
+      "--add",
+      "--push",
+      "origin",
+      destination,
+    );
+  }
+  assert.deepEqual((await snapshot()).remotes, [
+    { name: "origin", url: remote, pushUrls },
+  ]);
+});
+
+test("selected push publishes a different local branch to a new destination without changing checkout or tracking", async (t) => {
+  const { path, remote, branch, action, snapshot, commitFile } =
+    await syncFixture(t);
+  const initial = await git(path, "rev-parse", "HEAD");
+  await action("branch-create", { name: "feature/local" });
+  const source = await commitFile("feature.txt", "feature\n", "Local feature");
+  await git(path, "branch", "--set-upstream-to", `origin/${branch}`);
+  await action("checkout", { ref: branch });
+  await git(path, "tag", "feature/local", initial);
+  await git(path, "config", "remote.origin.push", "refs/heads/*:refs/heads/*");
+  const trackingBefore = await git(
+    path,
+    "config",
+    "--get-regexp",
+    "^branch\\.",
+  );
+  await action("push", {
+    remote: "origin",
+    localBranch: "feature/local",
+    remoteBranch: "review/destination",
+    setUpstream: false,
+  });
+  assert.equal(
+    await git(
+      remote,
+      "for-each-ref",
+      "--format=%(objectname)",
+      "refs/heads/review/destination",
+    ),
+    source,
+  );
+  assert.equal(await git(remote, "rev-parse", `refs/heads/${branch}`), initial);
+  assert.equal((await snapshot()).branch, branch);
+  assert.equal(await git(path, "rev-parse", "HEAD"), initial);
+  assert.equal(
+    await git(path, "config", "--get-regexp", "^branch\\."),
+    trackingBefore,
+  );
+  assert.equal(
+    await git(remote, "for-each-ref", "--format=%(refname)", "refs/heads"),
+    [`refs/heads/${branch}`, "refs/heads/review/destination"].sort().join("\n"),
+  );
+});
+
+test("selected push sets the chosen source upstream even while HEAD is detached", async (t) => {
+  const { path, remote, branch, action, snapshot, commitFile } =
+    await syncFixture(t);
+  const initial = await git(path, "rev-parse", "HEAD");
+  await action("branch-create", { name: "feature/local" });
+  const source = await commitFile("feature.txt", "feature\n", "Local feature");
+  await git(path, "switch", "--detach", initial);
+  await action("push", {
+    remote: "origin",
+    localBranch: "feature/local",
+    remoteBranch: "review/destination",
+    setUpstream: true,
+  });
+  assert.equal(
+    await git(remote, "rev-parse", "refs/heads/review/destination"),
+    source,
+  );
+  assert.equal(
+    await git(path, "config", "branch.feature/local.remote"),
+    "origin",
+  );
+  assert.equal(
+    await git(path, "config", "branch.feature/local.merge"),
+    "refs/heads/review/destination",
+  );
+  assert.equal(
+    await git(path, "config", `branch.${branch}.merge`),
+    `refs/heads/${branch}`,
+  );
+  assert.equal((await snapshot()).detached, true);
+  assert.equal(await git(path, "rev-parse", "HEAD"), initial);
+  await assert.rejects(
+    action("push", { remote: "origin", setUpstream: true }),
+    /branch|detached|upstream/i,
+  );
+});
+
+test("selected push does not publish annotated tags when followTags is enabled", async (t) => {
+  const { path, remote, branch, action } = await syncFixture(t);
+  const source = await git(path, "rev-parse", "HEAD");
+  await git(
+    path,
+    "tag",
+    "--annotate",
+    "private-release",
+    "--message",
+    "Local release",
+  );
+  await git(path, "config", "push.followTags", "true");
+  await action("push", {
+    remote: "origin",
+    localBranch: branch,
+    remoteBranch: "review/selected-only",
+  });
+  assert.equal(await git(remote, "for-each-ref", "refs/tags"), "");
+  assert.equal(
+    await git(remote, "rev-parse", "refs/heads/review/selected-only"),
+    source,
+  );
+  assert.equal(await git(path, "config", "push.followTags"), "true");
+});
+
+test("selected pull fast-forwards the current branch from a different remote branch without changing tracking", async (t) => {
+  const { path, branch, action, snapshot, commitFile } = await syncFixture(t);
+  await action("branch-create", { name: "incoming/source" });
+  const incoming = await commitFile(
+    "incoming.txt",
+    "incoming\n",
+    "Incoming change",
+  );
+  await git(
+    path,
+    "push",
+    "origin",
+    "refs/heads/incoming/source:refs/heads/review/source",
+  );
+  await action("checkout", { ref: branch });
+  const trackingBefore = await git(
+    path,
+    "config",
+    "--get-regexp",
+    "^branch\\.",
+  );
+  await action("pull", { remote: "origin", remoteBranch: "review/source" });
+  assert.equal(await git(path, "rev-parse", "HEAD"), incoming);
+  assert.equal((await snapshot()).branch, branch);
+  assert.equal(
+    await readFile(join(path, "incoming.txt"), "utf8"),
+    "incoming\n",
+  );
+  assert.equal(
+    await git(path, "config", "--get-regexp", "^branch\\."),
+    trackingBefore,
+  );
+});
+
+test("selected pull rejects a divergent remote branch without merging or changing the current branch", async (t) => {
+  const { path, branch, action, snapshot, commitFile } = await syncFixture(t);
+  await action("branch-create", { name: "incoming/source" });
+  await commitFile("incoming.txt", "incoming\n", "Incoming change");
+  await git(
+    path,
+    "push",
+    "origin",
+    "refs/heads/incoming/source:refs/heads/review/source",
+  );
+  await action("checkout", { ref: branch });
+  const local = await commitFile("local.txt", "local\n", "Local change");
+  await assert.rejects(
+    action("pull", { remote: "origin", remoteBranch: "review/source" }),
+    /fast.forward|diverg/i,
+  );
+  assert.equal(await git(path, "rev-parse", "HEAD"), local);
+  const state = await snapshot();
+  assert.equal(state.branch, branch);
+  assert.equal(state.upstream, `origin/${branch}`);
+  assert.equal(state.operation, null);
+  assert.deepEqual(state.files, []);
+});
+
+async function pullSafetyFixture(t) {
+  const data = await syncFixture(t);
+  const { path, branch, action, commitFile } = data;
+  const initial = await git(path, "rev-parse", "HEAD");
+  await action("branch-create", { name: "incoming/source" });
+  const incoming = await commitFile(
+    "hello.txt",
+    "remote update\n",
+    "Incoming update",
+  );
+  await git(
+    path,
+    "push",
+    "origin",
+    "refs/heads/incoming/source:refs/heads/review/source",
+  );
+  await action("checkout", { ref: branch });
+  return { ...data, initial, incoming };
+}
+
+test("selected pull refuses overlapping edits instead of applying configured autostash", async (t) => {
+  for (const rebase of [false, true]) {
+    await t.test(rebase ? "rebase autostash" : "merge autostash", async (t) => {
+      const { path, remote, action, initial, snapshot } =
+        await pullSafetyFixture(t);
+      const remoteBefore = await git(remote, "show-ref");
+      await git(path, "config", "pull.rebase", String(rebase));
+      await git(path, "config", "merge.autoStash", "true");
+      await git(path, "config", "rebase.autoStash", "true");
+      await writeFile(join(path, "hello.txt"), "staged work\n");
+      await action("stage", { files: ["hello.txt"] });
+      await writeFile(join(path, "hello.txt"), "unsaved work\n");
+      await assert.rejects(
+        action("pull", { remote: "origin", remoteBranch: "review/source" }),
+        /overwritten|unstaged|commit.*stash|cannot pull/i,
+      );
+      assert.equal(await git(path, "rev-parse", "HEAD"), initial);
+      assert.equal(await git(path, "show", ":hello.txt"), "staged work");
+      assert.equal(
+        await readFile(join(path, "hello.txt"), "utf8"),
+        "unsaved work\n",
+      );
+      assert.equal(await git(path, "stash", "list"), "");
+      assert.equal(await git(remote, "show-ref"), remoteBefore);
+      assert.equal((await snapshot()).operation, null);
+    });
+  }
+});
+
+test("selected pull preserves unrelated staged, unstaged, and untracked edits", async (t) => {
+  const { path, remote, action, branch, incoming, snapshot } =
+    await pullSafetyFixture(t);
+  const remoteBefore = await git(remote, "show-ref");
+  await git(path, "config", "pull.rebase", "true");
+  await git(path, "config", "merge.autoStash", "true");
+  await git(path, "config", "rebase.autoStash", "true");
+  await writeFile(join(path, "local.txt"), "staged work\n");
+  await action("stage", { files: ["local.txt"] });
+  await writeFile(join(path, "local.txt"), "unstaged work\n");
+  await writeFile(join(path, "draft.txt"), "untracked work\n");
+  await action("pull", { remote: "origin", remoteBranch: "review/source" });
+  assert.equal(await git(path, "rev-parse", "HEAD"), incoming);
+  assert.equal(await git(path, "show", ":local.txt"), "staged work");
+  assert.equal(
+    await readFile(join(path, "local.txt"), "utf8"),
+    "unstaged work\n",
+  );
+  assert.equal(
+    await readFile(join(path, "draft.txt"), "utf8"),
+    "untracked work\n",
+  );
+  assert.equal((await snapshot()).upstream, `origin/${branch}`);
+  assert.equal(await git(remote, "show-ref"), remoteBefore);
+  assert.equal(await git(path, "stash", "list"), "");
+});
+
+test("selected pull remains fast-forward-only when Git is configured to rebase", async (t) => {
+  const { path, remote, action, branch, snapshot, commitFile } =
+    await pullSafetyFixture(t);
+  const remoteBefore = await git(remote, "show-ref");
+  const local = await commitFile(
+    "local.txt",
+    "local commit\n",
+    "Local divergence",
+  );
+  await git(path, "config", "pull.rebase", "true");
+  await git(path, "config", `branch.${branch}.rebase`, "true");
+  await git(path, "config", "pull.ff", "false");
+  await assert.rejects(
+    action("pull", { remote: "origin", remoteBranch: "review/source" }),
+    /fast.forward|diverg/i,
+  );
+  assert.equal(await git(path, "rev-parse", "HEAD"), local);
+  assert.equal((await snapshot()).upstream, `origin/${branch}`);
+  assert.equal((await snapshot()).operation, null);
+  assert.equal(await git(remote, "show-ref"), remoteBefore);
+});
+
+test("selected push rejects non-fast-forward updates without altering the destination", async (t) => {
+  const { path, remote, branch, action, commitFile } = await syncFixture(t);
+  await action("branch-create", { name: "feature/local" });
+  await commitFile("source.txt", "source\n", "Source change");
+  await action("checkout", { ref: branch });
+  const destination = await commitFile(
+    "remote.txt",
+    "remote\n",
+    "Remote change",
+  );
+  await git(
+    path,
+    "push",
+    "origin",
+    `refs/heads/${branch}:refs/heads/review/destination`,
+  );
+  await assert.rejects(
+    action("push", {
+      remote: "origin",
+      localBranch: "feature/local",
+      remoteBranch: "review/destination",
+    }),
+    /non.fast.forward|rejected/i,
+  );
+  assert.equal(
+    await git(remote, "rev-parse", "refs/heads/review/destination"),
+    destination,
+  );
+  assert.equal(await git(path, "rev-parse", "HEAD"), destination);
+});
+
+test("selected pull requires a checked-out branch and leaves detached HEAD unchanged", async (t) => {
+  const { path, branch, action, commitFile } = await syncFixture(t);
+  const initial = await git(path, "rev-parse", "HEAD");
+  await commitFile("incoming.txt", "incoming\n", "Incoming change");
+  await action("push");
+  await git(path, "switch", "--detach", initial);
+  await assert.rejects(
+    action("pull", { remote: "origin", remoteBranch: branch }),
+    /branch|detached/i,
+  );
+  assert.equal(await git(path, "rev-parse", "HEAD"), initial);
+});
+
+test("selected sync refuses an active merge without changing local or remote refs", async (t) => {
+  const { path, remote, branch, action, snapshot, commitFile } =
+    await syncFixture(t);
+  await action("branch-create", { name: "conflicting" });
+  await commitFile("hello.txt", "conflicting\n", "Conflicting change");
+  await action("checkout", { ref: branch });
+  const local = await commitFile("hello.txt", "local\n", "Local change");
+  await assert.rejects(action("merge", { ref: "conflicting" }), /conflict/i);
+  const remoteBefore = await git(remote, "show-ref");
+  const localBefore = await git(path, "show-ref");
+  await assert.rejects(
+    action("push", {
+      remote: "origin",
+      localBranch: branch,
+      remoteBranch: branch,
+    }),
+    /operation|progress|finish/i,
+  );
+  await assert.rejects(
+    action("pull", { remote: "origin", remoteBranch: branch }),
+    /operation|progress|finish/i,
+  );
+  assert.equal(await git(remote, "show-ref"), remoteBefore);
+  assert.equal(await git(path, "show-ref"), localBefore);
+  assert.equal(await git(path, "rev-parse", "HEAD"), local);
+  assert.equal((await snapshot()).operation, "merge");
+});
+
+test("selected sync rejects partial selections, nonlocal sources, and unsafe arguments before changing any refs", async (t) => {
+  const { path, remote, branch, action } = await syncFixture(t);
+  const unconfigured = join(path, "unconfigured.git");
+  await git(path, "init", "--bare", unconfigured);
+  const before = await git(remote, "show-ref");
+  const localBefore = await git(path, "show-ref");
+  const configBefore = await readFile(join(path, ".git", "config"));
+  const invalidPush = [
+    { localBranch: branch, remoteBranch: "destination" },
+    { remote: "origin", localBranch: branch },
+    { remote: "origin", remoteBranch: "destination" },
+    { remote: "origin", localBranch: "missing", remoteBranch: "destination" },
+    {
+      remote: "origin",
+      localBranch: `origin/${branch}`,
+      remoteBranch: "destination",
+    },
+  ];
+  for (const value of [
+    "--all",
+    "+main",
+    ":main",
+    "main:other",
+    "main other",
+    "refs/heads/main",
+    "*",
+    "main\nother",
+    "",
+  ]) {
+    invalidPush.push({
+      remote: "origin",
+      localBranch: value,
+      remoteBranch: "destination",
+    });
+    invalidPush.push({
+      remote: "origin",
+      localBranch: branch,
+      remoteBranch: value,
+    });
+  }
+  for (const value of [
+    "--mirror",
+    "https://example.invalid/repo.git",
+    "../sync remote.git",
+    "missing-remote",
+    "unconfigured.git",
+    ".",
+  ]) {
+    invalidPush.push({
+      remote: value,
+      localBranch: branch,
+      remoteBranch: "destination",
+    });
+  }
+  for (const args of invalidPush) {
+    await assert.rejects(
+      action("push", args),
+      /branch|remote|ref|option|invalid|select/i,
+      JSON.stringify(args),
+    );
+    assert.equal(await git(remote, "show-ref"), before);
+    assert.equal(await git(unconfigured, "for-each-ref"), "");
+    assert.equal(await git(path, "show-ref"), localBefore);
+    assert.deepEqual(
+      await readFile(join(path, ".git", "config")),
+      configBefore,
+    );
+  }
+  for (const args of [
+    { remoteBranch: branch },
+    { remote: "origin", localBranch: branch, remoteBranch: branch },
+    { remote: "origin", remoteBranch: "--all" },
+    { remote: "origin", remoteBranch: "main:other" },
+    { remote: "origin", remoteBranch: "*" },
+    { remote: "origin", remoteBranch: "" },
+    { remote: "origin", remoteBranch: "refs/heads/main" },
+    { remote: "missing-remote", remoteBranch: branch },
+    { remote: "unconfigured.git", remoteBranch: branch },
+    { remote: "https://example.invalid/repo.git", remoteBranch: branch },
+  ]) {
+    await assert.rejects(
+      action("pull", args),
+      /branch|remote|ref|option|invalid|select/i,
+      JSON.stringify(args),
+    );
+    assert.equal(await git(remote, "show-ref"), before);
+    assert.equal(await git(path, "show-ref"), localBefore);
+    assert.deepEqual(
+      await readFile(join(path, ".git", "config")),
+      configBefore,
     );
   }
 });

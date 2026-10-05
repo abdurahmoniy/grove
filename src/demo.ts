@@ -3,6 +3,7 @@ import type {
   Commit,
   CommitDetails,
   DiffData,
+  GeneratedCommitMessage,
   Snapshot,
 } from "./types";
 
@@ -207,7 +208,67 @@ export async function demoRequest<T>(
       binary: false,
       truncated: false,
     } satisfies DiffData;
-  else if (method === "commitDetails")
+  else if (method === "generateCommitMessage") {
+    if (
+      snapshot.files.some(
+        (file) =>
+          file.index === "U" ||
+          file.worktree === "U" ||
+          ["AA", "DD"].includes(file.index + file.worktree),
+      )
+    )
+      throw new Error("Resolve conflicts before generating a commit message.");
+    const staged = snapshot.files
+      .filter((file) => file.index !== " " && file.index !== "?")
+      .sort((a, b) => a.path.localeCompare(b.path));
+    if (!staged.length)
+      throw new Error(
+        "Stage at least one file before generating a commit message.",
+      );
+    const verbs: Record<string, string> = {
+      A: "Add",
+      D: "Remove",
+      R: "Rename",
+      C: "Copy",
+      T: "Change file type for",
+      M: "Update",
+    };
+    const shortSummary = staged
+      .slice(0, 2)
+      .map((file, index) => {
+        const verb = verbs[file.index] || "Update";
+        return `${index ? verb.toLowerCase() : verb} ${file.path.split("/").pop()}`;
+      })
+      .join(" and ");
+    const fingerprintData = JSON.stringify(
+      staged.map((file) => ({
+        path: file.path,
+        originalPath: file.originalPath,
+        status: file.index,
+        diff: diffFor(file.path),
+      })),
+    );
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(fingerprintData),
+    );
+    result = {
+      summary:
+        staged.length <= 2 && shortSummary.length <= 72
+          ? shortSummary
+          : `Update ${staged.length} staged ${staged.length === 1 ? "file" : "files"}`,
+      description: staged
+        .map(
+          (file) =>
+            `- ${verbs[file.index] || "Update"} ${file.originalPath ? `${file.originalPath} → ` : ""}${file.path}`,
+        )
+        .join("\n"),
+      fileCount: staged.length,
+      stagedFingerprint: Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join(""),
+    } satisfies GeneratedCommitMessage;
+  } else if (method === "commitDetails")
     result = {
       commit: commits.find((c) => c.hash === payload.hash) || commits[0],
       files: [

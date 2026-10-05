@@ -1,30 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ArrowDown,
-  ArrowUp,
-  ChevronDown,
-  RefreshCw,
-  MoreHorizontal,
   FolderOpen,
-  GitBranch,
   Terminal,
   Plus,
-  GitMerge,
-  Archive,
-  Tag,
-  Copy,
-  Command,
-  CircleHelp,
-  FolderGit2,
   Download,
   Check,
   AlertTriangle,
-  PanelLeftClose,
-  PanelLeftOpen,
 } from "lucide-react";
 import type { ActionArgs, DiffData, Project, Snapshot } from "./types";
 import { errorMessage, isDesktop, request } from "./api";
-import Sidebar from "./components/Sidebar";
+import {
+  isValidSyncBranch,
+  normalizeQuickActions,
+  normalizeSyncTarget,
+  resolveSyncRemote,
+} from "./lib/quickActions";
+import type {
+  QuickActionPreferences,
+  RepositorySyncPreferences,
+} from "./lib/quickActions";
+import WorkspaceHeader from "./components/WorkspaceHeader";
+import CommitComposer from "./components/CommitComposer";
 import type { View } from "./components/Sidebar";
 import Changes, {
   isConflict,
@@ -37,20 +33,13 @@ import History from "./components/History";
 import Resources from "./components/Resources";
 import type { ActivityEntry } from "./components/Resources";
 import ActionDialog from "./components/ActionDialog";
+import SyncDialog from "./components/SyncDialog";
 import StashInspector from "./components/StashInspector";
-import {
-  Badge,
-  EmptyState,
-  IconButton,
-  Loading,
-  Logo,
-  Modal,
-  Toast,
-} from "./components/ui";
+import { EmptyState, Loading, Logo, Modal, Toast } from "./components/ui";
 
 const viewLabels: Record<View, string> = {
-  changes: "Local changes",
-  history: "Commit history",
+  changes: "Changes",
+  history: "History",
   branches: "Branches",
   stashes: "Stashes",
   tags: "Tags",
@@ -85,6 +74,7 @@ function ResizeHandle({
       role="separator"
       aria-label={label}
       aria-orientation="vertical"
+      aria-valuetext={`${width} pixels`}
       aria-valuenow={width}
       aria-valuemin={min}
       aria-valuemax={max}
@@ -123,6 +113,13 @@ export default function App() {
   projectRef.current = project;
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [view, setView] = useState<View>("changes");
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const previousView = useRef(view);
+  useEffect(() => {
+    if (previousView.current !== view)
+      headingRef.current?.focus({ preventScroll: true });
+    previousView.current = view;
+  }, [view]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [revision, setRevision] = useState(0);
@@ -144,12 +141,10 @@ export default function App() {
     message: string;
     error?: boolean;
   } | null>(null);
-  const [menu, setMenu] = useState<"repo" | "add" | null>(null);
   const [help, setHelp] = useState(false);
   const [stashInspect, setStashInspect] = useState<string | null>(null);
   const closeStashInspect = useCallback(() => setStashInspect(null), []);
   const [editor, setEditor] = useState<string | null>(null);
-  const [sidebarHidden, setSidebarHidden] = useState(window.innerWidth <= 760);
   const [drafts, setDrafts] = useState<Record<string, CommitDraft>>(() => {
     try {
       return JSON.parse(preference("drafts", "{}"));
@@ -157,29 +152,81 @@ export default function App() {
       return {};
     }
   });
-  const navigate = (next: View) => {
-    setView(next);
-    if (window.innerWidth <= 760) setSidebarHidden(true);
-  };
+  const navigate = (next: View) => setView(next);
   useEffect(() => {
     try {
       localStorage.setItem("grove:drafts", JSON.stringify(drafts));
     } catch {}
   }, [drafts]);
-  useEffect(() => {
-    const media = window.matchMedia("(max-width: 760px)");
-    const resize = () => setSidebarHidden(media.matches);
-    media.addEventListener("change", resize);
-    return () => media.removeEventListener("change", resize);
-  }, []);
-  const [sidebarWidth, setSidebarWidth] = useState(232);
-  const [filesWidth, setFilesWidth] = useState(330);
-  const [fontSize, setFontSize] = useState(preference("fontSize", "12"));
+  const [filesWidth, setFilesWidth] = useState(() => {
+    const saved = Number(preference("filesWidth", "320"));
+    return Number.isFinite(saved) ? Math.max(280, Math.min(480, saved)) : 320;
+  });
+  const [fontSize, setFontSize] = useState(preference("fontSize", "13"));
   const [compact, setCompact] = useState(
     preference("compact", "false") === "true",
   );
+  const [quickActions, setQuickActions] = useState(() =>
+    normalizeQuickActions(preference("quickActions", "{}")),
+  );
+  const [syncTargets, setSyncTargets] = useState<Record<string, unknown>>(
+    () => {
+      try {
+        const saved: unknown = JSON.parse(preference("syncTargets", "{}"));
+        return saved && typeof saved === "object" && !Array.isArray(saved)
+          ? (saved as Record<string, unknown>)
+          : {};
+      } catch {
+        return {};
+      }
+    },
+  );
+  const syncTarget = normalizeSyncTarget(
+    project ? syncTargets[project.path] : undefined,
+  );
+  const syncRemote = resolveSyncRemote(snapshot, syncTarget);
+  const syncDisabledReason = busy
+    ? "Wait for the current operation to finish"
+    : !snapshot || !project
+      ? "Open a repository to sync"
+      : snapshot.detached
+        ? "Switch to a local branch before syncing"
+        : snapshot.operation
+          ? `Finish the ${snapshot.operation} operation before syncing`
+          : !isValidSyncBranch(syncTarget.branch)
+            ? "Choose a valid default branch in Preferences → Quick actions"
+            : !syncRemote
+              ? "Choose a configured sync remote in Preferences → Quick actions"
+              : "";
+  const syncHint = `Fast-forward ${snapshot?.branch || "the current branch"} from ${syncRemote}/${syncTarget.branch}. Stops if branches have diverged.`;
+  const saveQuickActions = (next: QuickActionPreferences) => {
+    const value = normalizeQuickActions(next);
+    setQuickActions(value);
+    try {
+      localStorage.setItem("grove:quickActions", JSON.stringify(value));
+    } catch {
+      setToast({
+        message:
+          "Quick actions updated for this session, but could not be saved.",
+        error: true,
+      });
+    }
+  };
+  const saveSyncTarget = (next: RepositorySyncPreferences) => {
+    if (!project) return;
+    const value = { ...syncTargets, [project.path]: normalizeSyncTarget(next) };
+    setSyncTargets(value);
+    try {
+      localStorage.setItem("grove:syncTargets", JSON.stringify(value));
+    } catch {
+      setToast({
+        message:
+          "Sync target updated for this session, but could not be saved.",
+        error: true,
+      });
+    }
+  };
   const openOperation = useCallback((action: string, args: ActionArgs = {}) => {
-    setMenu(null);
     if (action === "stash-inspect") {
       setStashInspect(args.ref || "stash@{0}");
       return;
@@ -302,16 +349,7 @@ export default function App() {
     const timer = setTimeout(() => setToast(null), 5000);
     return () => clearTimeout(timer);
   }, [toast]);
-  useEffect(() => {
-    const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenu(null);
-    };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, []);
-
   const openRepository = useCallback(async () => {
-    setMenu(null);
     try {
       const opened = await request<Project | null>("open");
       if (opened) {
@@ -327,6 +365,7 @@ export default function App() {
     const listener = (e: KeyboardEvent) => {
       if (
         !(e.metaKey || e.ctrlKey) ||
+        document.querySelector('.modal[role="dialog"]') ||
         operation ||
         editor ||
         help ||
@@ -342,6 +381,11 @@ export default function App() {
       } else if (e.key.toLowerCase() === "k") {
         e.preventDefault();
         if (project) openOperation("command");
+      } else if (["1", "2", "3"].includes(e.key) && project) {
+        e.preventDefault();
+        setView(
+          e.key === "1" ? "changes" : e.key === "2" ? "history" : "branches",
+        );
       } else if (e.key.toLowerCase() === "f" && view === "changes") {
         e.preventDefault();
         document
@@ -366,7 +410,11 @@ export default function App() {
   ]);
 
   const run = useCallback(
-    async (action: string, args: ActionArgs = {}) => {
+    async (
+      action: string,
+      args: ActionArgs = {},
+      options: { inlineErrors?: boolean } = {},
+    ) => {
       const path = project?.path;
       if (!path && action !== "clone" && action !== "init")
         throw new Error("Open a repository first.");
@@ -413,7 +461,7 @@ export default function App() {
           setToast({
             message:
               action === "commit"
-                ? "Committed. A little progress, saved."
+                ? "Commit created."
                 : action === "stage"
                   ? "Changes staged for your next commit."
                   : action === "unstage"
@@ -424,7 +472,8 @@ export default function App() {
         }
       } catch (err) {
         record(errorMessage(err), true);
-        setToast({ message: errorMessage(err), error: true });
+        if (!options.inlineErrors)
+          setToast({ message: errorMessage(err), error: true });
         throw err;
       } finally {
         await refresh();
@@ -435,6 +484,12 @@ export default function App() {
   );
   const quickAction = (action: string, args: ActionArgs = {}) => {
     if (!busy) void run(action, args).catch(() => {});
+  };
+  const syncWithDefault = () => {
+    if (syncDisabledReason) return;
+    const args = { remote: syncRemote, remoteBranch: syncTarget.branch };
+    if (quickActions.confirmSync) openOperation("pull", args);
+    else quickAction("pull", args);
   };
   const currentConflict = snapshot?.files.find(
     (f) => f.path === selected?.path && isConflict(f),
@@ -449,15 +504,17 @@ export default function App() {
   const isChanges = view === "changes";
   return (
     <div
-      className={`app ${compact ? "compact-mode" : ""} ${sidebarHidden ? "sidebar-hidden" : ""} ${isDesktop ? "desktop" : "browser"}`}
+      className={`app ${compact ? "compact-mode" : ""} workbench ${isDesktop ? "desktop" : "browser"}`}
       style={
         {
-          "--sidebar-width": `${sidebarWidth}px`,
           "--files-width": `${filesWidth}px`,
           "--code-size": `${fontSize}px`,
         } as React.CSSProperties
       }
     >
+      <a className="skip-link" href="#workspace-content">
+        Skip to workspace
+      </a>
       <div className="titlebar">
         <div className="window-space">
           {!isDesktop && (
@@ -470,164 +527,41 @@ export default function App() {
         </div>
         <div className="titlebar-center">
           <span>Grove</span>
-          <ChevronDown size={10} />
-          <span>Your workspace</span>
+          <span>{project?.name || "Local Git client"}</span>
         </div>
-        <div className="titlebar-right">
-          <span className="local-dot" />
-          LOCAL FIRST
-          <IconButton label="Keyboard shortcuts" onClick={() => setHelp(true)}>
-            <Command size={13} />
-          </IconButton>
-        </div>
+        <div className="titlebar-right" aria-hidden="true" />
       </div>
       <div className="app-body">
-        {!sidebarHidden && (
-          <>
-            <Sidebar
-              projects={projects}
-              project={project}
-              snapshot={snapshot}
-              view={view}
-              setView={navigate}
-              selectProject={(p) => {
-                if (!busy) {
-                  setProject(p);
-                  navigate("changes");
-                }
-              }}
-              onOpen={() => void openRepository()}
-              onAdd={() => setMenu(menu === "add" ? null : "add")}
-            />
-            <ResizeHandle
-              label="Resize sidebar"
-              width={sidebarWidth}
-              onResize={setSidebarWidth}
-              min={200}
-              max={310}
-            />
-          </>
-        )}
-        {!sidebarHidden && (
-          <div
-            className="sidebar-scrim"
-            onClick={() => setSidebarHidden(true)}
+        <main className="workspace" aria-label="Repository workspace">
+          <WorkspaceHeader
+            projects={projects}
+            project={project}
+            snapshot={snapshot}
+            busy={!!busy}
+            view={view}
+            setView={navigate}
+            selectProject={(next) => {
+              if (!busy) {
+                setProject(next);
+                navigate("changes");
+              }
+            }}
+            onOpen={() => void openRepository()}
+            onOperation={openOperation}
+            onQuickAction={quickAction}
+            onRefresh={() => void refresh()}
+            onHelp={() => setHelp(true)}
+            quickActions={quickActions}
+            syncBranch={syncTarget.branch}
+            syncHint={syncHint}
+            syncDisabledReason={syncDisabledReason}
+            onDefaultSync={syncWithDefault}
           />
-        )}
-        <main className="workspace">
-          <header className="repo-toolbar">
-            <div className="repo-breadcrumb">
-              <IconButton
-                label={sidebarHidden ? "Show sidebar" : "Hide sidebar"}
-                onClick={() => setSidebarHidden(!sidebarHidden)}
-              >
-                {sidebarHidden ? (
-                  <PanelLeftOpen size={17} />
-                ) : (
-                  <PanelLeftClose size={17} />
-                )}
-              </IconButton>
-              <span className="repo-breadcrumb-icon">
-                <FolderGit2 size={19} />
-              </span>
-              <strong>{project?.name || "Your workspace"}</strong>
-              {project && (
-                <>
-                  <span className="breadcrumb-slash">/</span>
-                  <button
-                    className="branch-selector"
-                    disabled={busy !== ""}
-                    onClick={() => setView("branches")}
-                  >
-                    <GitBranch size={14} />
-                    {snapshot?.branch || "Loading…"}
-                    <ChevronDown size={13} />
-                  </button>
-                  {snapshot?.detached && (
-                    <Badge tone="amber">Detached HEAD</Badge>
-                  )}
-                </>
-              )}
-            </div>
-            <div className="sync-actions">
-              <button
-                className="button toolbar-button"
-                disabled={!snapshot?.upstream || !!busy}
-                title={
-                  !snapshot?.upstream
-                    ? "Set an upstream with Push first"
-                    : "Pull with fast-forward only"
-                }
-                onClick={() => quickAction("pull")}
-              >
-                <ArrowDown size={14} />
-                <span>Pull</span>
-                {!!snapshot?.behind && <small>{snapshot.behind}</small>}
-              </button>
-              <button
-                className="button toolbar-button push-button"
-                disabled={!snapshot || !snapshot.remotes.length || !!busy}
-                onClick={() => openOperation("push")}
-              >
-                <ArrowUp size={14} />
-                <span>Push</span>
-                {!!snapshot?.ahead && <small>{snapshot.ahead}</small>}
-              </button>
-              <span className="toolbar-divider" />
-              <IconButton
-                label="Repository actions"
-                disabled={!snapshot || !!busy}
-                onClick={() => setMenu(menu === "repo" ? null : "repo")}
-              >
-                <MoreHorizontal size={20} />
-              </IconButton>
-            </div>
-          </header>
-          <div className="workspace-heading">
-            <div>
-              <h1>
-                {project || ["settings", "activity"].includes(view)
-                  ? viewLabels[view]
-                  : "Good things start here."}
-              </h1>
-              <p>
-                {view === "changes"
-                  ? snapshot?.files.length
-                    ? `${snapshot.files.length} changed file${snapshot.files.length === 1 ? "" : "s"}. Review and commit your work.`
-                    : "Your working tree is clean."
-                  : view === "history"
-                    ? "Browse commits and inspect changes."
-                    : view === "branches"
-                      ? "Switch, create, and manage branches."
-                      : view === "activity"
-                        ? "Everything that happens in your workspace."
-                        : view === "settings"
-                          ? "Adjust Grove to your preferences."
-                          : `Manage your repository’s ${view}.`}
-              </p>
-            </div>
-            <div className="heading-right">
-              {project && (
-                <>
-                  <span className="repository-location" title={project.path}>
-                    <span className="tiny-dot" />
-                    {isDesktop ? "Local repository" : "Sample repository"}
-                  </span>
-                  <button
-                    className="button subtle"
-                    disabled={!!busy}
-                    onClick={() => void refresh()}
-                  >
-                    <RefreshCw size={13} className={busy ? "spin" : ""} />
-                    <span>{busy ? "Working…" : "Refresh"}</span>
-                    <kbd>⌘R</kbd>
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
+          <h1 className="sr-only" ref={headingRef} tabIndex={-1}>
+            {viewLabels[view]}
+          </h1>
           {snapshot?.operation && (
-            <div className="operation-banner">
+            <div className="operation-banner" role="status">
               <AlertTriangle size={16} />
               <span>
                 <strong>{snapshot.operation} in progress.</strong> Resolve
@@ -649,7 +583,11 @@ export default function App() {
               </button>
             </div>
           )}
-          <div className="workspace-content">
+          <div
+            className="workspace-content"
+            id="workspace-content"
+            tabIndex={-1}
+          >
             {loading ? (
               <Loading />
             ) : !project && !["settings", "activity"].includes(view) ? (
@@ -663,11 +601,11 @@ export default function App() {
                   <span className="orbit-dot one" />
                   <span className="orbit-dot two" />
                 </div>
-                <h2>Your next chapter starts here.</h2>
+                <h2>Your code, ready to review.</h2>
                 <p>
-                  A calm, considered space for your repositories.
+                  Open a local Git repository or clone one from a remote.
                   <br />
-                  Open a project and see the bigger picture.
+                  Your existing Git identity and credentials are used.
                 </p>
                 <div className="welcome-buttons">
                   <button
@@ -721,19 +659,6 @@ export default function App() {
               <div className="changes-workspace">
                 <Changes
                   key={project?.path}
-                  draft={
-                    drafts[project!.path] || {
-                      summary: "",
-                      description: "",
-                      amend: false,
-                    }
-                  }
-                  onDraftChange={(draft) =>
-                    setDrafts((current) => ({
-                      ...current,
-                      [project!.path]: draft,
-                    }))
-                  }
                   snapshot={snapshot}
                   selected={selected}
                   onSelect={(path, staged) => setSelected({ path, staged })}
@@ -743,23 +668,16 @@ export default function App() {
                       ? openOperation(action, { files })
                       : quickAction(action, { files })
                   }
-                  onCommit={async (message, amend) => {
-                    if (amend) {
-                      openOperation("amend", { message });
-                      return false;
-                    }
-                    try {
-                      await run("commit", { message });
-                      return true;
-                    } catch {
-                      return false;
-                    }
-                  }}
                 />
                 <ResizeHandle
                   label="Resize changed files"
                   width={filesWidth}
-                  onResize={setFilesWidth}
+                  onResize={(width) => {
+                    setFilesWidth(width);
+                    try {
+                      localStorage.setItem("grove:filesWidth", String(width));
+                    } catch {}
+                  }}
                   min={280}
                   max={480}
                 />
@@ -812,9 +730,43 @@ export default function App() {
                 onPreference={notifyPreference}
                 fontSize={fontSize}
                 compact={compact}
+                project={project}
+                quickActions={quickActions}
+                syncTarget={syncTarget}
+                onQuickActionsChange={saveQuickActions}
+                onSyncTargetChange={saveSyncTarget}
               />
             )}
           </div>
+          {isChanges && snapshot && project && !loading && (
+            <CommitComposer
+              key={project.path}
+              snapshot={snapshot}
+              busy={!!busy}
+              draft={
+                drafts[project.path] || {
+                  summary: "",
+                  description: "",
+                  amend: false,
+                }
+              }
+              onDraftChange={(draft) =>
+                setDrafts((current) => ({ ...current, [project.path]: draft }))
+              }
+              onCommit={async (message, amend) => {
+                if (amend) {
+                  openOperation("amend", { message });
+                  return false;
+                }
+                try {
+                  await run("commit", { message });
+                  return true;
+                } catch {
+                  return false;
+                }
+              }}
+            />
+          )}
         </main>
       </div>
       <footer className="statusbar">
@@ -822,123 +774,42 @@ export default function App() {
           <Logo size={13} />
           <span>
             {isDesktop
-              ? "Connected to local Git"
+              ? "Local Git"
               : "Interactive demo · no local files are changed"}
           </span>
-          {snapshot && (
-            <>
-              <span className="footer-separator" />
-              <GitBranch size={12} />
-              <span>{snapshot.branch}</span>
-            </>
-          )}
         </div>
         <div>
-          {snapshot && (
-            <>
-              <span>
-                {snapshot.files.length
-                  ? `${snapshot.files.length} changed`
-                  : "Working tree clean"}
-              </span>
-              <span className="footer-separator" />
-              <ArrowUp size={11} />
-              {snapshot.ahead}
-              <ArrowDown size={11} />
-              {snapshot.behind}
-              <span className="footer-separator" />
-            </>
-          )}
+          <span className="operation-status" role="status">
+            {busy ? "Working…" : ""}
+          </span>
           <button disabled={!project} onClick={() => openOperation("command")}>
             <Terminal size={12} />
             Git command<kbd>⌘K</kbd>
           </button>
-          <IconButton label="Help and shortcuts" onClick={() => setHelp(true)}>
-            <CircleHelp size={13} />
-          </IconButton>
         </div>
       </footer>
-      {menu && (
-        <>
-          <div className="menu-dismiss" onClick={() => setMenu(null)} />
-          <div
-            className={`dropdown-menu ${menu === "add" ? "add-menu" : "repo-menu"}`}
-          >
-            {menu === "add" ? (
-              <>
-                <span className="menu-label">YOUR NEXT PROJECT</span>
-                <button onClick={() => void openRepository()}>
-                  <FolderOpen size={15} />
-                  Open repository<kbd>⌘O</kbd>
-                </button>
-                <button onClick={() => openOperation("clone")}>
-                  <Copy size={15} />
-                  Clone repository
-                </button>
-                <button
-                  onClick={() => {
-                    setMenu(null);
-                    quickAction("init");
-                  }}
-                >
-                  <Plus size={15} />
-                  Initialize repository
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="menu-label">REPOSITORY ACTIONS</span>
-                <button
-                  onClick={() => {
-                    setMenu(null);
-                    quickAction("fetch");
-                  }}
-                >
-                  <RefreshCw size={15} />
-                  Fetch from remote
-                </button>
-                <div className="menu-rule" />
-                <button onClick={() => openOperation("branch-create")}>
-                  <GitBranch size={15} />
-                  Create branch
-                </button>
-                <button onClick={() => openOperation("merge")}>
-                  <GitMerge size={15} />
-                  Merge branch…
-                </button>
-                <button onClick={() => openOperation("rebase")}>
-                  <GitBranch size={15} />
-                  Rebase branch…
-                </button>
-                <div className="menu-rule" />
-                <button onClick={() => openOperation("stash-save")}>
-                  <Archive size={15} />
-                  Stash changes…
-                </button>
-                <button onClick={() => openOperation("tag-create")}>
-                  <Tag size={15} />
-                  Create tag…
-                </button>
-                <div className="menu-rule" />
-                <button onClick={() => openOperation("command")}>
-                  <Terminal size={15} />
-                  Git command<kbd>⌘K</kbd>
-                </button>
-              </>
-            )}
-          </div>
-        </>
-      )}
-      {operation && (
-        <ActionDialog
-          action={operation.action}
-          initial={operation.args}
-          snapshot={snapshot}
-          path={project?.path || ""}
-          onClose={closeOperation}
-          onSubmit={run}
-        />
-      )}
+      {operation &&
+        (operation.action === "pull" || operation.action === "push" ? (
+          <SyncDialog
+            action={operation.action}
+            initial={operation.args}
+            snapshot={snapshot}
+            path={project?.path || ""}
+            onClose={closeOperation}
+            onSubmit={(action, args) =>
+              run(action, args, { inlineErrors: true })
+            }
+          />
+        ) : (
+          <ActionDialog
+            action={operation.action}
+            initial={operation.args}
+            snapshot={snapshot}
+            path={project?.path || ""}
+            onClose={closeOperation}
+            onSubmit={run}
+          />
+        ))}
       {stashInspect && project && (
         <StashInspector
           path={project.path}
@@ -959,8 +830,8 @@ export default function App() {
       )}
       {help && (
         <Modal
-          title="A few helpful shortcuts"
-          subtitle="Less reaching. More making."
+          title="Keyboard shortcuts"
+          subtitle="Move through your workspace without leaving the keyboard."
           onClose={closeHelp}
         >
           <div className="shortcut-list">
@@ -969,7 +840,9 @@ export default function App() {
               ["Refresh repository", "⌘ R"],
               ["Find a changed file", "⌘ F"],
               ["Open Git command", "⌘ K"],
-              ["Commit from description", "⌘ ↵"],
+              ["Changes / History / Branches", "⌘ 1 / 2 / 3"],
+              ["Commit from summary or description", "⌘ ↵"],
+              ["Previous / next file", "↑ / ↓"],
               ["Close a dialog", "Esc"],
             ].map(([label, key]) => (
               <div key={label}>

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { commitMessageFromStagedDiff } from "./commit-message.mjs";
 
 const DIFF_LIMIT = 1024 * 1024;
 const FULL_DIFF_LIMIT = 16 * 1024 * 1024;
@@ -122,6 +123,13 @@ function remoteName(value) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) || value.includes(".."))
     throw new Error("Invalid remote name.");
   return value;
+}
+
+async function syncBranchName(root, value) {
+  ref(value, "branch");
+  if (value.startsWith("+") || value.startsWith("refs/"))
+    throw new Error("Select a branch name, not a refspec or full ref.");
+  return validName(root, value, "branch");
 }
 
 async function exists(path) {
@@ -302,10 +310,13 @@ async function snapshot(root) {
     remoteRaw
       .split("\n")
       .filter(Boolean)
-      .map(async (name) => ({
-        name,
-        url: await text(root, ["remote", "get-url", name]),
-      })),
+      .map(async (name) => {
+        const [url, pushUrls] = await Promise.all([
+          text(root, ["remote", "get-url", name]),
+          text(root, ["remote", "get-url", "--push", "--all", name]),
+        ]);
+        return { name, url, pushUrls: pushUrls.split("\n").filter(Boolean) };
+      }),
   );
   let ahead = 0;
   let behind = 0;
@@ -341,6 +352,31 @@ async function resolveCommit(root, value) {
     "--end-of-options",
     `${ref(value)}^{commit}`,
   ]);
+}
+
+async function generateCommitMessage(root) {
+  const result = await git(
+    root,
+    [
+      "diff",
+      "--cached",
+      "--raw",
+      "-z",
+      "--no-abbrev",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--ignore-submodules=none",
+      "--ita-invisible-in-index",
+      "-M",
+      "--",
+    ],
+    { diff: true, outputLimit: DIFF_LIMIT },
+  );
+  if (result.truncated)
+    throw new Error(
+      "Too many staged changes to generate a message. Stage a smaller set of files.",
+    );
+  return commitMessageFromStagedDiff(result.stdout);
 }
 
 async function history(root, { skip = 0, limit = 100, search } = {}) {
@@ -799,6 +835,69 @@ async function action(root, name, args = {}) {
     case "fetch":
     case "pull":
     case "push": {
+      const selected =
+        args.localBranch !== undefined || args.remoteBranch !== undefined;
+      if (selected) {
+        if (name === "fetch")
+          throw new Error(
+            "Branch selections are only supported for pull and push.",
+          );
+        if (name === "pull" && args.localBranch !== undefined)
+          throw new Error(
+            "Pull applies to the current branch; do not select a local branch.",
+          );
+        const remote = remoteName(args.remote);
+        const remotes = (await text(root, ["remote"])).split("\n");
+        if (!remotes.includes(remote))
+          throw new Error(
+            `Remote ${remote} is not configured in this repository.`,
+          );
+        const remoteBranch = await syncBranchName(root, args.remoteBranch);
+        const currentOperation = await operation(root);
+        if (currentOperation)
+          throw new Error(
+            `Finish the ${currentOperation} operation before syncing branches.`,
+          );
+        if (name === "pull") {
+          if (
+            (
+              await git(root, ["symbolic-ref", "--quiet", "HEAD"], {
+                optional: true,
+              })
+            ).failed
+          )
+            throw new Error("Switch to a local branch before pulling changes.");
+          argv = [
+            "pull",
+            "--ff-only",
+            "--no-rebase",
+            "--no-autostash",
+            "--",
+            remote,
+            `refs/heads/${remoteBranch}`,
+          ];
+        } else {
+          const localBranch = await syncBranchName(root, args.localBranch);
+          const source = `refs/heads/${localBranch}`;
+          if (
+            (
+              await git(root, ["show-ref", "--verify", "--quiet", source], {
+                optional: true,
+              })
+            ).failed
+          )
+            throw new Error(`Local branch ${localBranch} does not exist.`);
+          argv = [
+            "push",
+            "--no-follow-tags",
+            ...(args.setUpstream ? ["--set-upstream"] : []),
+            "--",
+            remote,
+            `${source}:refs/heads/${remoteBranch}`,
+          ];
+        }
+        break;
+      }
       argv = [name];
       if (name === "fetch") argv.push("--prune");
       if (name === "pull") argv.push("--ff-only");
@@ -915,6 +1014,7 @@ export class GitService {
         "history",
         "diff",
         "commitDetails",
+        "generateCommitMessage",
         "readFile",
         "writeFile",
         "action",
@@ -933,6 +1033,8 @@ export class GitService {
         return diff(root, payload);
       case "commitDetails":
         return commitDetails(root, payload.hash);
+      case "generateCommitMessage":
+        return serialize(root, () => generateCommitMessage(root));
       case "readFile":
         return readTextFile(root, payload.file);
       case "writeFile":

@@ -13,9 +13,16 @@ import {
   Check,
   Terminal,
   ArrowUpRight,
+  ArrowDown,
+  ArrowUp,
 } from "lucide-react";
 import type { ActionArgs, Snapshot, Project } from "../types";
 import type { View } from "./Sidebar";
+import type {
+  QuickActionPreferences,
+  RepositorySyncPreferences,
+} from "../lib/quickActions";
+import QuickActionSettings from "./QuickActionSettings";
 import { Badge, EmptyState, IconButton, timeAgo } from "./ui";
 export interface ActivityEntry {
   id: number;
@@ -35,6 +42,11 @@ export default function Resources({
   onPreference,
   fontSize,
   compact,
+  project,
+  quickActions,
+  syncTarget,
+  onQuickActionsChange,
+  onSyncTargetChange,
 }: {
   view: View;
   snapshot: Snapshot | null;
@@ -45,6 +57,11 @@ export default function Resources({
   onPreference: (key: string, value: string | boolean) => void;
   fontSize: string;
   compact: boolean;
+  project: Project | null;
+  quickActions: QuickActionPreferences;
+  syncTarget: RepositorySyncPreferences;
+  onQuickActionsChange: (next: QuickActionPreferences) => void;
+  onSyncTargetChange: (next: RepositorySyncPreferences) => void;
 }) {
   const [expanded, setExpanded] = useState<number | null>(null);
   if (view === "activity")
@@ -99,9 +116,20 @@ export default function Resources({
     return (
       <div className="resource-page preferences">
         <div className="resource-intro">
-          <h2>Make yourself at home</h2>
-          <p>A few small things to make Grove feel like yours.</p>
+          <h2>Workspace preferences</h2>
+          <p>
+            Customize quick actions, sync defaults, and your review workspace.
+          </p>
         </div>
+        <QuickActionSettings
+          key={project?.path || "no-repository"}
+          snapshot={snapshot}
+          project={project}
+          preferences={quickActions}
+          target={syncTarget}
+          onPreferencesChange={onQuickActionsChange}
+          onTargetChange={onSyncTargetChange}
+        />
         <section className="settings-section">
           <h3>Appearance</h3>
           <div className="setting-row">
@@ -110,11 +138,13 @@ export default function Resources({
               <p>Applies to unified and split diffs.</p>
             </div>
             <select
+              aria-label="Code font size"
               value={fontSize}
               onChange={(e) => onPreference("fontSize", e.target.value)}
             >
               <option value="11">Small · 11 px</option>
-              <option value="12">Default · 12 px</option>
+              <option value="12">Medium · 12 px</option>
+              <option value="13">Default · 13 px</option>
               <option value="14">Large · 14 px</option>
               <option value="16">Extra large · 16 px</option>
             </select>
@@ -264,6 +294,53 @@ export default function Resources({
                   <code>{b.hash.slice(0, 7)}</code>
                 </div>
                 <div className="resource-actions">
+                  {b.remote ? (
+                    <button
+                      type="button"
+                      className="button small"
+                      disabled={
+                        snapshot.detached ||
+                        !!snapshot.operation ||
+                        !snapshot.remotes.some((remote) =>
+                          b.name.startsWith(`${remote.name}/`),
+                        )
+                      }
+                      aria-label={`Pull from ${b.name} into ${snapshot.branch}`}
+                      onClick={() => {
+                        const remote = [...snapshot.remotes]
+                          .sort((a, b) => b.name.length - a.name.length)
+                          .find((remote) =>
+                            b.name.startsWith(`${remote.name}/`),
+                          );
+                        if (remote)
+                          onOperation("pull", {
+                            remote: remote.name,
+                            remoteBranch: b.name.slice(remote.name.length + 1),
+                          });
+                      }}
+                    >
+                      <ArrowDown size={13} aria-hidden="true" />
+                      Pull…
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="button small"
+                      disabled={
+                        !snapshot.remotes.length || !!snapshot.operation
+                      }
+                      aria-label={`Push ${b.name} to a remote branch`}
+                      onClick={() =>
+                        onOperation("push", {
+                          localBranch: b.name,
+                          setUpstream: false,
+                        })
+                      }
+                    >
+                      <ArrowUp size={13} aria-hidden="true" />
+                      Push…
+                    </button>
+                  )}
                   {!b.current && (
                     <button
                       className="button small"

@@ -11,6 +11,7 @@ import {
   Settings2,
   Activity,
   Leaf,
+  X,
 } from "lucide-react";
 import type { Project, Snapshot } from "../types";
 import { Avatar, IconButton, Logo } from "./ui";
@@ -33,6 +34,9 @@ interface Props {
   selectProject: (project: Project) => void;
   onOpen: () => void;
   onAdd: () => void;
+  onClose?: () => void;
+  menuOpen?: boolean;
+  overlay?: boolean;
 }
 export default function Sidebar({
   projects,
@@ -43,19 +47,43 @@ export default function Sidebar({
   selectProject,
   onOpen,
   onAdd,
+  onClose,
+  menuOpen = false,
+  overlay = false,
 }: Props) {
   return (
-    <aside className="sidebar">
+    <aside
+      className="sidebar"
+      id="grove-sidebar"
+      role={overlay ? "dialog" : undefined}
+      aria-modal={overlay ? true : undefined}
+      aria-label="Workspace navigation"
+    >
       <div className="brand">
         <Logo />
         <span>
           grove<span className="brand-period">.</span>
         </span>
+        {onClose && (
+          <IconButton
+            className="sidebar-close"
+            label="Close sidebar"
+            onClick={onClose}
+          >
+            <X size={18} />
+          </IconButton>
+        )}
       </div>
       <div className="sidebar-content">
         <div className="section-heading">
-          <span>WORKSPACE</span>
-          <IconButton label="Add repository" onClick={onAdd}>
+          <span>Repositories</span>
+          <IconButton
+            label="Add repository"
+            onClick={onAdd}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-controls={menuOpen ? "grove-action-menu" : undefined}
+          >
             <Plus size={15} />
           </IconButton>
         </div>
@@ -64,15 +92,24 @@ export default function Sidebar({
             <button
               key={p.path}
               className={`project-link ${project?.path === p.path ? "active" : ""}`}
+              aria-current={project?.path === p.path ? true : undefined}
+              title={p.path}
               onClick={() => selectProject(p)}
             >
               <span className={`project-symbol project-symbol-${i % 3}`}>
                 <FolderGit2 size={17} />
               </span>
               <span>{p.name}</span>
-              {project?.path === p.path && <span className="online-dot" />}
+              {project?.path === p.path && (
+                <span className="online-dot" aria-hidden="true" />
+              )}
             </button>
           ))}
+          {!projects.length && (
+            <p className="repository-empty">
+              Open a repository to get started.
+            </p>
+          )}
           <button className="add-project" onClick={onOpen}>
             <Plus size={15} />
             Open repository<span>⌘O</span>
@@ -83,6 +120,7 @@ export default function Sidebar({
           <button
             disabled={!project}
             className={view === "changes" ? "selected" : ""}
+            aria-current={view === "changes" ? "page" : undefined}
             onClick={() => setView("changes")}
           >
             <Layers2 size={17} />
@@ -94,6 +132,7 @@ export default function Sidebar({
           <button
             disabled={!project}
             className={view === "history" ? "selected" : ""}
+            aria-current={view === "history" ? "page" : undefined}
             onClick={() => setView("history")}
           >
             <GitCommitHorizontal size={18} />
@@ -126,6 +165,7 @@ export default function Sidebar({
                 key={item.id}
                 disabled={item.id !== "activity" && !project}
                 className={view === item.id ? "selected" : ""}
+                aria-current={view === item.id ? "page" : undefined}
                 onClick={() => setView(item.id)}
               >
                 <item.icon size={16} />
@@ -138,6 +178,7 @@ export default function Sidebar({
       <div className="sidebar-bottom">
         <button
           className={view === "settings" ? "selected" : ""}
+          aria-current={view === "settings" ? "page" : undefined}
           onClick={() => setView("settings")}
         >
           <Settings2 size={16} />
@@ -153,12 +194,8 @@ export default function Sidebar({
         <div className="profile">
           <Avatar name={snapshot?.user.name || "Local workspace"} />
           <div>
-            <strong>{snapshot?.user.name || "Your workspace"}</strong>
-            <span>
-              {isDesktop
-                ? "Everything stays local"
-                : "Explore. Make yourself at home."}
-            </span>
+            <strong>{snapshot?.user.name || "Local workspace"}</strong>
+            <span>{snapshot?.user.email || "Git identity"}</span>
           </div>
           <span className="local-indicator" />
         </div>

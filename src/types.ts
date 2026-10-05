@@ -25,7 +25,7 @@ export interface Snapshot {
   branches: Branch[];
   tags: string[];
   stashes: { ref: string; message: string }[];
-  remotes: { name: string; url: string }[];
+  remotes: { name: string; url: string; pushUrls?: string[] }[];
   operation: string | null;
   user: { name: string; email: string };
 }
@@ -55,6 +55,12 @@ export interface DiffData {
   binary: boolean;
   truncated: boolean;
 }
+export interface GeneratedCommitMessage {
+  summary: string;
+  description: string;
+  fileCount: number;
+  stagedFingerprint: string;
+}
 export interface ActionArgs {
   files?: string[];
   message?: string;
@@ -63,6 +69,8 @@ export interface ActionArgs {
   ref?: string;
   mode?: string;
   remote?: string;
+  localBranch?: string;
+  remoteBranch?: string;
   url?: string;
   includeUntracked?: boolean;
   setUpstream?: boolean;
