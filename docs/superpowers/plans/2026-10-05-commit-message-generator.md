@@ -37,4 +37,5 @@ including while a request is pending.
   focus after applying/regenerating, and modal keyboard focus containment.
 - Minimum desktop window (860 × 620): no commit-bar horizontal overflow; dialog
   actions stay visible while its content scrolls.
-- macOS app packaging succeeded.
+- macOS app packaging succeeded. Reopened the packaged Grove app and confirmed
+  Generate appears beside the summary, disabled with staging guidance when empty.
